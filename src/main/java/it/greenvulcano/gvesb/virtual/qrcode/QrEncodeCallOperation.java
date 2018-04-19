@@ -30,10 +30,13 @@ import it.greenvulcano.gvesb.virtual.OperationKey;
 import it.greenvulcano.util.metadata.PropertiesHandler;
 
 import java.awt.AlphaComposite;
+import java.awt.Color;
+import java.awt.Font;
+import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
+import java.io.File;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -64,18 +67,30 @@ import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel;
  */
 public class QrEncodeCallOperation implements CallOperation {
     
-    private static final Logger logger = org.slf4j.LoggerFactory.getLogger(QrEncodeCallOperation.class);    
+    private static final Logger LOGGER = org.slf4j.LoggerFactory.getLogger(QrEncodeCallOperation.class); 
+    
+    private static final String TEXT_FONT_NAME ="Monospace";
+    private static final int TEXT_FONT_SIZE = 48;
+    
+    /*
+     * Sizes computed for font Monospace - size 48
+     */
+    private static final int TEXT_CHARACTER_WITH = 32;
+    private static final int TEXT_HORIZONTAL_MARGIN = 48;
+    private static final int TEXT_VERTICAL_MARGIN = 64;
+	    
+    
     private OperationKey key = null;
     
     protected String name;
     
-    private String bgColorCode, fgColorCode,size, width, height, logo;
+    private String bgColorCode, fgColorCode,size, width, height, logo, text, outputFile;
        
     private QRCodeWriter qrCodeWriter = new QRCodeWriter();
     
     @Override
     public void init(Node node) throws InitializationException  {
-        logger.debug("Init start");
+        LOGGER.debug("Init start");
         try {            
             name =  XMLConfig.get(node, "@name");  	
         	
@@ -88,8 +103,8 @@ public class QrEncodeCallOperation implements CallOperation {
             height = XMLConfig.get(node, "@height");
             
             logo = XMLConfig.get(node, "@logo");
-            
-            
+            text = XMLConfig.get(node, "@text");
+            outputFile = XMLConfig.get(node, "@outputFile");
             
         } catch (Exception exc) {
             throw new InitializationException("GV_INIT_SERVICE_ERROR", new String[][]{{"message", exc.getMessage()}},
@@ -138,29 +153,62 @@ public class QrEncodeCallOperation implements CallOperation {
         	  BitMatrix bitMatrix = qrCodeWriter.encode(content, BarcodeFormat.QR_CODE, w, h, hints);
         	  
         	  BufferedImage qrImage = MatrixToImageWriter.toBufferedImage(bitMatrix, matrixToImageConfig);
-        	  
-        	  byte[] qrCode;
-        	  
+        	         	  
         	  if (logo!=null) {
         		  
         		  String logoURI = PropertiesHandler.expand(logo, gvBuffer); 
         		       		        		  
         		  BufferedImage logoImage = logoURI.startsWith("http") ? ImageIO.read(new URL(logoURI)) :
         			                                                     ImageIO.read(Files.newInputStream(Paths.get(logoURI), StandardOpenOption.READ));
+        		          		  
+        		  int deltaHeight = qrImage.getHeight() - logoImage.getHeight();
+        	      int deltaWidth = qrImage.getWidth() - logoImage.getWidth();
+         	      BufferedImage combined = new BufferedImage(qrImage.getHeight(), qrImage.getWidth(), BufferedImage.TYPE_INT_ARGB);
+        	    	
+        	      Graphics2D g = (Graphics2D) combined.getGraphics();
+        	      g.drawImage(qrImage, 0, 0, null);       	     
+        	      g.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, 1f));
+        	      g.drawImage(logoImage, (int) Math.round(deltaWidth / 2), (int) Math.round(deltaHeight / 2), null);
         		  
-        		  qrCode = combineOverlay(qrImage, logoImage);
+        		  qrImage = combined;
+        		  
+        	  }
+        	  
+        	  if (text!=null) {       		
+        		  
+        		  String actualText = PropertiesHandler.expand(text, gvBuffer);
+        		  int textSize = actualText.length() * TEXT_CHARACTER_WITH;
+        		  
+        		  BufferedImage qrCodeWithText = new BufferedImage( textSize>qrImage.getWidth() ? textSize+TEXT_HORIZONTAL_MARGIN : qrImage.getWidth(), qrImage.getHeight()+TEXT_VERTICAL_MARGIN, BufferedImage.TYPE_INT_ARGB);
+        		      		    
+        		  Graphics graphics = qrCodeWithText.getGraphics();
+        		  graphics.setColor(Color.decode(backgroundColor.toString()));
+        		  graphics.fillRect(0, 0, qrCodeWithText.getWidth(), qrCodeWithText.getHeight());
+        		  graphics.setColor(Color.decode(foregroundColor.toString()));
+        		  graphics.setFont(new Font(TEXT_FONT_NAME, Font.PLAIN, TEXT_FONT_SIZE));       		    
+        		    
+        		  graphics.drawString(actualText, (qrCodeWithText.getWidth()/2) - (textSize/2), 48 );
+        		  graphics.drawImage(qrImage, (qrCodeWithText.getWidth()/2) - (qrImage.getWidth()/2), 72, null);
+        		  
+        		  qrImage = qrCodeWithText;        	  
+        	  }
+        	  
+        	  
+        	  if (outputFile!=null) {        		  
+        		  
+        		  String actualOutputFile = PropertiesHandler.expand(outputFile, gvBuffer);        		  
+        		  ImageIO.write(qrImage, "png", new File(actualOutputFile));
+        		  
+        		  gvBuffer.setObject(actualOutputFile);
         		  
         	  } else {
-        		  
         		  try (ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream()) {
         	        	ImageIO.write(qrImage, "png", byteArrayOutputStream);
         	        	
-        	        	qrCode = byteArrayOutputStream.toByteArray();
-        	        } 
-        	  }
-        	  
-        		
-        	  gvBuffer.setObject(qrCode);
+        	        	 gvBuffer.setObject(byteArrayOutputStream.toByteArray());
+        	        }  
+        		 
+        	  }      	 
         		          
            
         } catch (Exception exc) {
@@ -170,37 +218,7 @@ public class QrEncodeCallOperation implements CallOperation {
         }
         return gvBuffer;
     }
-    
-    
-    private byte[] combineOverlay(BufferedImage baseImage, BufferedImage overlay) throws IOException {
-    	// Calculate the delta height and width between QR code and logo
-        int deltaHeight = baseImage.getHeight() - overlay.getHeight();
-        int deltaWidth = baseImage.getWidth() - overlay.getWidth();
-
-        // Initialize combined image
-        BufferedImage combined = new BufferedImage(baseImage.getHeight(), baseImage.getWidth(), BufferedImage.TYPE_INT_ARGB);
-    	
-    	Graphics2D g = (Graphics2D) combined.getGraphics();
-
-        // Write QR code to new image at position 0/0
-        g.drawImage(baseImage, 0, 0, null);
-        g.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, 1f));
-
-        // Write logo into combine image at position (deltaWidth / 2) and
-        // (deltaHeight / 2). Background: Left/Right and Top/Bottom must be
-        // the same space for the logo to be centered
-        g.drawImage(overlay, (int) Math.round(deltaWidth / 2), (int) Math.round(deltaHeight / 2), null);
-
-        try (ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream()) {
-        	ImageIO.write(combined, "png", byteArrayOutputStream);
-        	
-        	return byteArrayOutputStream.toByteArray();
-        }        
-       
-
-    }
-    
-   
+  
     @Override
     public void cleanUp(){
         // do nothing
